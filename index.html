@@ -1605,8 +1605,14 @@ function renderProgressView() {
   // 音声再生ボタンを作る便利な関数
   const createVoiceBtn = (text, color = "#57606f", bg = "#f1f2f6") => {
     if(!text) return "";
-    const safeText = text.replace(/'/g, "\\'").replace(/<[^>]*>?/gm, '');
-    // 枠線をなくし、丸みと影をつけてスタイリッシュなピル型に
+    
+    // ▼ここを強化！タグ削除だけでなく、改行や「"」も安全な形に変換する
+    const safeText = text
+      .replace(/<[^>]*>?/gm, '')    // 太字などのHTMLタグを消す
+      .replace(/'/g, "\\'")         // シングルクォートをエスケープ
+      .replace(/"/g, "&quot;")      // ダブルクォートを安全な文字に変換
+      .replace(/\r?\n/g, " ");      // ★一番の原因「改行」をただのスペースに変換！
+      
     return `<button onclick="event.stopPropagation(); playVoice('${safeText}')" style="margin-left:8px; background:${bg}; border:none; color:${color}; border-radius:12px; padding:4px 10px; font-size:11px; font-weight:bold; cursor:pointer; flex-shrink:0; vertical-align:middle; box-shadow:0 2px 4px rgba(0,0,0,0.05); letter-spacing:0.5px;">音声</button>`;
   };
 
