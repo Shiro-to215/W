@@ -356,28 +356,27 @@ li {
   }
   
   .nav-btn {
-    /* 縦に間延びしないよう、固定の高さをやめて自然な余白（padding）に変更 */
     height: auto;
     padding: 10px 0;
-    
-    /* ▼ タップした時の「灰色の四角い影」を完全に消し去る魔法！ */
-    -webkit-tap-highlight-color: transparent;
+    -webkit-tap-highlight-color: transparent; /* ダサい四角い影は消したまま */
     outline: none;
+    transition: all 0.2s ease; /* アニメーションを滑らかに */
     
-    /* タップした時の動きを滑らかにする設定 */
-    transition: transform 0.1s ease, opacity 0.1s ease;
+    /* ▼ ここを追加！ 当たり判定（光る領域）を綺麗な角丸に整える */
+    border-radius: 18px; 
   }
 
-  /* ▼ 灰色の四角の代わりに、アイコンと文字自体が「フワッ」と沈む今風のアニメーションを追加 */
+  /* ▼ 灰色の四角の代わりに、綺麗な形でフワッと光る自作エフェクト！ */
   .nav-btn:active {
     transform: scale(0.92);
-    opacity: 0.6;
+    /* opacity: 0.6; はやめて、代わりに薄い青色で発光させる */
+    background-color: rgba(52, 152, 219, 0.15); 
   }
 
   .nav-btn .icon {
-    font-size: 26px; /* アイコンを少しだけ大きく */
+    font-size: 26px;
     margin-bottom: 4px;
-    display: inline-block; /* 縦横比の崩れを防止 */
+    display: inline-block;
   }
   
   .nav-btn .label {
