@@ -348,6 +348,23 @@ li {
     font-size: 16px;
   }
   /* ▲▲ ここまで ▲▲ */
+
+  /* ▼▼ 今回追加するコード（ここから） ▼▼ */
+  /* スマホの時だけ下のバーを高くし、アイコンを少し大きくする */
+  .bottom-nav {
+    padding: 16px 0 calc(16px + env(safe-area-inset-bottom)); /* 上下の余白を増やして高さを出す */
+  }
+  .nav-btn {
+    height: 75px; /* ボタンのタップ判定領域も広げる（元は65px） */
+  }
+  .nav-btn .icon {
+    font-size: 28px; /* アイコンをほんの少し大きく（元は24px） */
+    margin-bottom: 5px;
+  }
+  .nav-btn .label {
+    font-size: 12px; /* ラベルの文字もほんの少し大きく（元は11px） */
+  }
+  /* ▲▲ 今回追加するコード（ここまで） ▲▲ */
 }
 
 </style>
