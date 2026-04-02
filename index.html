@@ -350,21 +350,39 @@ li {
   /* ▲▲ ここまで ▲▲ */
 
   /* ▼▼ 今回追加するコード（ここから） ▼▼ */
-  /* スマホの時だけ下のバーを高くし、アイコンを少し大きくする */
+  /* スマホの時だけ下のバーを調整し、ネイティブアプリ風のタップ判定にする */
   .bottom-nav {
-    padding: 16px 0 calc(16px + env(safe-area-inset-bottom)); /* 上下の余白を増やして高さを出す */
+    padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); 
   }
+  
   .nav-btn {
-    height: 75px; /* ボタンのタップ判定領域も広げる（元は65px） */
+    /* 縦に間延びしないよう、固定の高さをやめて自然な余白（padding）に変更 */
+    height: auto;
+    padding: 10px 0;
+    
+    /* ▼ タップした時の「灰色の四角い影」を完全に消し去る魔法！ */
+    -webkit-tap-highlight-color: transparent;
+    outline: none;
+    
+    /* タップした時の動きを滑らかにする設定 */
+    transition: transform 0.1s ease, opacity 0.1s ease;
   }
+
+  /* ▼ 灰色の四角の代わりに、アイコンと文字自体が「フワッ」と沈む今風のアニメーションを追加 */
+  .nav-btn:active {
+    transform: scale(0.92);
+    opacity: 0.6;
+  }
+
   .nav-btn .icon {
-    font-size: 28px; /* アイコンをほんの少し大きく（元は24px） */
-    margin-bottom: 5px;
+    font-size: 26px; /* アイコンを少しだけ大きく */
+    margin-bottom: 4px;
+    display: inline-block; /* 縦横比の崩れを防止 */
   }
+  
   .nav-btn .label {
-    font-size: 12px; /* ラベルの文字もほんの少し大きく（元は11px） */
+    font-size: 11px;
   }
-  /* ▲▲ 今回追加するコード（ここまで） ▲▲ */
 }
 
 </style>
