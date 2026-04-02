@@ -355,32 +355,24 @@ li {
     padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); 
   }
   
-  .nav-btn {
-    height: auto;
-    padding: 10px 0;
-    -webkit-tap-highlight-color: transparent; /* ダサい四角い影は消したまま */
-    outline: none;
-    transition: all 0.2s ease; /* アニメーションを滑らかに */
-    
-    /* ▼ ここを追加！ 当たり判定（光る領域）を綺麗な角丸に整える */
-    border-radius: 18px; 
+  /* スマホの時だけ、下のバーを少し高くする */
+  .bottom-nav {
+    padding: 16px 0 calc(16px + env(safe-area-inset-bottom)); 
   }
-
-  /* ▼ 灰色の四角の代わりに、綺麗な形でフワッと光る自作エフェクト！ */
-  .nav-btn:active {
-    transform: scale(0.92);
-    /* opacity: 0.6; はやめて、代わりに薄い青色で発光させる */
-    background-color: rgba(52, 152, 219, 0.15); 
+  
+  /* iPadの綺麗な丸いボタンのまま、全体を均等に大きくする */
+  .nav-btn {
+    width: 75px;   /* 元の65pxから拡大（横幅） */
+    height: 75px;  /* 元の65pxから拡大（高さ）※これで縦伸びしません！ */
   }
 
   .nav-btn .icon {
-    font-size: 26px;
+    font-size: 28px; /* 元の24pxから少し大きく */
     margin-bottom: 4px;
-    display: inline-block;
   }
   
   .nav-btn .label {
-    font-size: 11px;
+    font-size: 12px; /* 元の11pxから少し大きく */
   }
 }
 
