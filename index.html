@@ -554,6 +554,7 @@ li {
 
 /* スクロールエリア */
 #word-list { max-height: 65svh; overflow-y: auto; padding: 10px; border-radius: 12px; }
+#word-list li { transition: none; }
 #word-list::-webkit-scrollbar { width: 6px; }
 #word-list::-webkit-scrollbar-track { background: transparent; }
 #word-list::-webkit-scrollbar-thumb { background-color: var(--border); border-radius: 10px; }
@@ -728,7 +729,7 @@ li {
   
   <span style="font-size: 12px; color: #95a5a6; pointer-events: none;">▼</span>
 </div>
-      <ul id="word-list" style="background: #f8f9fa; padding: 15px; border-radius: 16px; border: 1px solid #e2e8f0;"></ul>
+      <ul id="word-list" style="background: var(--bg-muted); padding: 15px; border-radius: 16px; border: 1px solid var(--border);"></ul>
     </div>
 
     <div class="setting-box" style="background: white; border: none; box-shadow: 0 4px 15px rgba(0,0,0,0.03);">
@@ -1116,6 +1117,74 @@ let cloudSyncTimer = null;
 let currentWordRenderIndex = 0;
 let currentWordRenderTarget = [];
 let quizPool = [], qIdx = 0, qMode = '', qDirection = '', curQ = null, timer = null, correctCount = 0;
+let progressVirtualState = null;
+let progressScrollRafPending = false;
+let wordListVirtualState = null;
+let wordListScrollRafPending = false;
+
+const PROGRESS_VIEW_STATE_KEY = 'vocabProgressViewState_V1';
+const WORD_LIST_VIEW_STATE_KEY = 'vocabWordListViewState_V1';
+
+function getSavedProgressViewState() {
+  try {
+    return JSON.parse(localStorage.getItem(PROGRESS_VIEW_STATE_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveProgressViewState(nextState) {
+  const current = getSavedProgressViewState();
+  const merged = { ...current, ...nextState };
+  try {
+    localStorage.setItem(PROGRESS_VIEW_STATE_KEY, JSON.stringify(merged));
+  } catch (e) {}
+}
+
+function applySavedProgressFilters() {
+  const saved = getSavedProgressViewState();
+  const applySelectValue = (id, value) => {
+    const el = document.getElementById(id);
+    if (!el || value === undefined || value === null) return;
+    if (Array.from(el.options).some(opt => opt.value === value)) el.value = value;
+  };
+  applySelectValue('progress-chapter-select', saved.chapterId);
+  applySelectValue('display-mode-select', saved.displayMode);
+  applySelectValue('sort-order-select', saved.sortOrder);
+  applySelectValue('layout-mode-select', saved.layoutMode);
+  applySelectValue('filter-weak-select', saved.weakFilter);
+  const searchInput = document.getElementById('progress-search-input');
+  if (searchInput && typeof saved.searchQuery === 'string') searchInput.value = saved.searchQuery;
+}
+
+function getProgressViewConfig() {
+  const chSelect = document.getElementById('progress-chapter-select');
+  const searchInput = document.getElementById('progress-search-input');
+  return {
+    chapterId: chSelect ? chSelect.value : 'all',
+    displayMode: document.getElementById('display-mode-select') ? document.getElementById('display-mode-select').value : 'all',
+    sortOrder: document.getElementById('sort-order-select') ? document.getElementById('sort-order-select').value : 'default',
+    layoutMode: document.getElementById('layout-mode-select') ? document.getElementById('layout-mode-select').value : 'list',
+    weakFilter: document.getElementById('filter-weak-select') ? document.getElementById('filter-weak-select').value : 'all',
+    searchQuery: searchInput ? searchInput.value.trim().toLowerCase() : ''
+  };
+}
+
+function getSavedWordListViewState() {
+  try {
+    return JSON.parse(localStorage.getItem(WORD_LIST_VIEW_STATE_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveWordListViewState(nextState) {
+  const current = getSavedWordListViewState();
+  const merged = { ...current, ...nextState };
+  try {
+    localStorage.setItem(WORD_LIST_VIEW_STATE_KEY, JSON.stringify(merged));
+  } catch (e) {}
+}
 
 function showToast(message) {
   const toast = document.getElementById("toast");
@@ -1455,6 +1524,13 @@ function updateChapterSelects() {
     currentChapters.forEach(ch => { s.innerHTML += `<option value="${ch.id}">${ch.name}</option>`; });
     if (current && Array.from(s.options).some(opt => opt.value === current)) s.value = current;
     else if (s.options.length > 0) s.value = s.options[0].value;
+
+    if (id === 'filter-chapter-select') {
+      const savedWordList = getSavedWordListViewState();
+      if (savedWordList && savedWordList.filterChapterId && Array.from(s.options).some(opt => opt.value === savedWordList.filterChapterId)) {
+        s.value = savedWordList.filterChapterId;
+      }
+    }
   });
 
   const box = document.getElementById('quiz-chapter-checkboxes');
@@ -1503,50 +1579,78 @@ function renderChapterList(movedId = null) {
   });
 }
 
-function renderWordList(isLoadMore = false) {
+function renderWordList() {
   const list = document.getElementById('word-list');
   if (!list) return;
-  const now = Date.now();
-  const targetThreshold = getCurrentMasteryThreshold();
 
-  if (!isLoadMore) {
-    const fEl = document.getElementById('filter-chapter-select');
-    const f = fEl ? fEl.value : 'all';
-    list.innerHTML = '';
-    currentWordRenderIndex = 0;
-    
-    // 現在の単語帳に含まれる章のIDリスト
-    const currentChapterIds = appData.chapters.filter(ch => ch.bookId === appData.currentBookId).map(ch => ch.id);
-    
-    // それぞれの章が「何番目か」を記憶するマップを作る
-    const chapterOrderMap = {};
-    currentChapterIds.forEach((id, index) => {
-      chapterOrderMap[id] = index;
+  const fEl = document.getElementById('filter-chapter-select');
+  const f = fEl ? fEl.value : 'all';
+  const stateKey = `${appData.currentBookId || 'no-book'}|${f}`;
+  const saved = getSavedWordListViewState();
+  const savedScrollTop = (saved.lastKey === stateKey && typeof saved.scrollTop === 'number') ? saved.scrollTop : 0;
+
+  saveWordListViewState({ filterChapterId: f, lastKey: stateKey });
+
+  const currentChapterIds = appData.chapters.filter(ch => ch.bookId === appData.currentBookId).map(ch => ch.id);
+  const chapterOrderMap = {};
+  currentChapterIds.forEach((id, index) => {
+    chapterOrderMap[id] = index;
+  });
+
+  let words = f === 'all'
+    ? appData.words.filter(w => currentChapterIds.includes(w.chapterId))
+    : appData.words.filter(w => w.chapterId === f);
+
+  if (f === 'all') {
+    words = [...words].sort((a, b) => {
+      const orderA = chapterOrderMap[a.chapterId] !== undefined ? chapterOrderMap[a.chapterId] : 9999;
+      const orderB = chapterOrderMap[b.chapterId] !== undefined ? chapterOrderMap[b.chapterId] : 9999;
+      return orderA - orderB;
     });
-
-    currentWordRenderTarget = f === 'all' 
-      ? appData.words.filter(w => currentChapterIds.includes(w.chapterId)) 
-      : appData.words.filter(w => w.chapterId === f);
-
-    // 「全範囲(all)」の時は、単語を章の順番に並び替える処理
-    if (f === 'all') {
-      currentWordRenderTarget.sort((a, b) => {
-        const orderA = chapterOrderMap[a.chapterId] !== undefined ? chapterOrderMap[a.chapterId] : 9999;
-        const orderB = chapterOrderMap[b.chapterId] !== undefined ? chapterOrderMap[b.chapterId] : 9999;
-        return orderA - orderB;
-      });
-    }
   }
 
-  // ▼ 変更：一度に表示する件数を 50 から 100 に増やしました！
-  const chunkSize = 100;
-  const chunk = currentWordRenderTarget.slice(currentWordRenderIndex, currentWordRenderIndex + chunkSize);
-  
-  const html = chunk.map(w => {
+  if (words.length === 0) {
+    wordListVirtualState = null;
+    list.innerHTML = '<li style="background: transparent; border: none; box-shadow: none; margin: 0; padding: 10px; color: var(--text-secondary);">単語がありません</li>';
+    list.scrollTop = 0;
+    return;
+  }
+
+  const estimatedItemHeight = 110;
+  const preloadBuffer = 18;
+  const windowSize = 45;
+  const firstVisibleIndex = Math.max(0, Math.floor(savedScrollTop / estimatedItemHeight));
+  const initialStart = Math.max(0, firstVisibleIndex - preloadBuffer);
+  const initialEnd = Math.min(words.length, Math.max(initialStart + windowSize, firstVisibleIndex + preloadBuffer));
+
+  wordListVirtualState = {
+    words,
+    stateKey,
+    estimatedItemHeight,
+    preloadBuffer,
+    windowSize,
+    startIndex: initialStart,
+    endIndex: initialEnd
+  };
+
+  renderWordListVirtualWindow();
+  list.scrollTop = savedScrollTop;
+}
+
+function renderWordListVirtualWindow() {
+  const list = document.getElementById('word-list');
+  if (!list || !wordListVirtualState) return;
+
+  const now = Date.now();
+  const targetThreshold = getCurrentMasteryThreshold();
+  const { words, startIndex, endIndex, estimatedItemHeight } = wordListVirtualState;
+  const visibleWords = words.slice(startIndex, endIndex);
+
+  const cardHtml = visibleWords.map(w => {
     const isM = (w.streak || 0) >= targetThreshold;
     const rem = (w.nextReviewTime || 0) - now;
     const timeText = rem > 0 ? '(復習まであと ' + getRemTime(rem) + ')' : '(復習可能)';
-    const remText = isM ? `<span class="time-display" data-next-time="${w.nextReviewTime}" data-format="list">${timeText}</span>` : "";
+    const remText = isM ? `<span class="time-display" data-next-time="${w.nextReviewTime}" data-format="list">${timeText}</span>` : '';
     return `<li>
       <div class="word-info">
         <strong style="font-size:1.1em; color:#2c3e50;">${w.en}</strong> - ${w.ja}<br>
@@ -1563,15 +1667,47 @@ function renderWordList(isLoadMore = false) {
     </li>`;
   }).join('');
 
-  const oldBtn = document.getElementById('load-more-words-btn');
-  if (oldBtn) oldBtn.remove();
-  list.insertAdjacentHTML('beforeend', html);
-  currentWordRenderIndex += chunkSize;
+  const topH = startIndex * estimatedItemHeight;
+  const bottomH = Math.max(0, (words.length - endIndex) * estimatedItemHeight);
 
-  if (currentWordRenderIndex < currentWordRenderTarget.length) {
-    const remaining = currentWordRenderTarget.length - currentWordRenderIndex;
-    list.insertAdjacentHTML('beforeend', `<button id="load-more-words-btn" onclick="renderWordList(true)" style="width:100%; padding:15px; margin-top:15px; background-color:#3498db; color:white; border:none; border-radius:12px; font-weight:bold; cursor:pointer;">さらに表示 (残り ${remaining} 語)</button>`);
+  list.innerHTML = `
+    <li style="height:${topH}px; margin:0; padding:0; border:none; box-shadow:none; background:transparent;"></li>
+    ${cardHtml}
+    <li style="height:${bottomH}px; margin:0; padding:0; border:none; box-shadow:none; background:transparent;"></li>
+  `;
+}
+
+function handleWordListVirtualScroll() {
+  const list = document.getElementById('word-list');
+  if (!list) return;
+
+  if (wordListVirtualState) {
+    saveWordListViewState({
+      lastKey: wordListVirtualState.stateKey,
+      scrollTop: list.scrollTop,
+      filterChapterId: document.getElementById('filter-chapter-select') ? document.getElementById('filter-chapter-select').value : 'all'
+    });
   }
+
+  if (!wordListVirtualState) return;
+  if (wordListScrollRafPending) return;
+
+  wordListScrollRafPending = true;
+  requestAnimationFrame(() => {
+    wordListScrollRafPending = false;
+    if (!wordListVirtualState) return;
+
+    const { words, estimatedItemHeight, preloadBuffer, windowSize } = wordListVirtualState;
+    const firstVisible = Math.max(0, Math.floor(list.scrollTop / estimatedItemHeight));
+    const nextStart = Math.max(0, firstVisible - preloadBuffer);
+    const nextEnd = Math.min(words.length, Math.max(nextStart + windowSize, firstVisible + preloadBuffer));
+
+    if (nextStart !== wordListVirtualState.startIndex || nextEnd !== wordListVirtualState.endIndex) {
+      wordListVirtualState.startIndex = nextStart;
+      wordListVirtualState.endIndex = nextEnd;
+      renderWordListVirtualWindow();
+    }
+  });
 }
 
 function addChapter() {
@@ -1832,7 +1968,10 @@ function switchTab(tab, btnElement) {
 
   setTimeout(() => {
     if(tab === 'manage') renderWordList();
-    if(tab === 'progress') renderProgressView();
+    if(tab === 'progress') {
+      applySavedProgressFilters();
+      renderProgressView();
+    }
   }, 200);
 }
 
@@ -1934,23 +2073,20 @@ function toggleMask(el) {
 }
 
 function renderProgressView() {
-  const chSelect = document.getElementById('progress-chapter-select');
-  const chId = chSelect ? chSelect.value : null;
-  const displayMode = document.getElementById('display-mode-select') ? document.getElementById('display-mode-select').value : 'all';
-  const sortOrder = document.getElementById('sort-order-select') ? document.getElementById('sort-order-select').value : 'default';
-  const layoutMode = document.getElementById('layout-mode-select') ? document.getElementById('layout-mode-select').value : 'list';
-  const weakFilter = document.getElementById('filter-weak-select') ? document.getElementById('filter-weak-select').value : 'all';
-  
-  const searchInput = document.getElementById('progress-search-input');
-  const searchQuery = searchInput ? searchInput.value.trim().toLowerCase() : '';
-  
+  const config = getProgressViewConfig();
+  const { chapterId: chId, displayMode, sortOrder, layoutMode, weakFilter, searchQuery } = config;
+
   const container = document.getElementById('progress-view-container');
   if (!container) return;
   container.innerHTML = '';
   const statusDiv = document.getElementById('chapter-mastery-status');
   if (!statusDiv) return;
 
-  if (!chId) { statusDiv.innerHTML = '章を選択してください'; return; }
+  if (!chId) {
+    progressVirtualState = null;
+    statusDiv.innerHTML = '章を選択してください';
+    return;
+  }
   
   const chapterMap = {};
   appData.chapters.forEach(ch => {
@@ -2003,6 +2139,7 @@ function renderProgressView() {
       return notMastered && recentlyMistaken;
     });
     if (displayWords.length === 0 && totalWords > 0) {
+      progressVirtualState = null;
       container.innerHTML = '<div style="text-align:center; padding: 20px; font-weight: bold; color: #27ae60;">🎉 苦手な単語はありません</div>';
       return;
     }
@@ -2015,6 +2152,7 @@ function renderProgressView() {
       return enMatch || jaMatch;
     });
     if (displayWords.length === 0) {
+      progressVirtualState = null;
       container.innerHTML = '<div style="text-align:center; padding: 20px; color: #7f8c8d;">検索に一致する単語が見つかりません</div>';
       return;
     }
@@ -2024,89 +2162,183 @@ function renderProgressView() {
   if (sortOrder === 'streak') displayWords.sort((a,b) => (b.streak||0) - (a.streak||0));
   if (sortOrder === 'streak-asc') displayWords.sort((a,b) => (a.streak||0) - (b.streak||0));
   
-  const now = Date.now();
+  const savedState = getSavedProgressViewState();
+  const viewKey = JSON.stringify(config);
+  const savedScrollTop = (savedState.lastViewKey === viewKey && typeof savedState.scrollTop === 'number') ? savedState.scrollTop : 0;
+
+  saveProgressViewState({ ...config, lastViewKey: viewKey });
+
   const showEn = displayMode === 'all' || displayMode === 'en-only';
   const showJa = displayMode === 'all' || displayMode === 'ja-only';
-  
+
   // 音声再生ボタンを作る便利な関数
-  const createVoiceBtn = (text, color = "#57606f", bg = "#f1f2f6") => {
-    if(!text) return "";
-    
-    // ▼ここを強化！タグ削除だけでなく、改行や「"」も安全な形に変換する
+  const createVoiceBtn = (text, color = 'var(--text-secondary)', bg = 'var(--bg-soft-button)') => {
+    if (!text) return '';
     const safeText = text
-      .replace(/<[^>]*>?/gm, '')    // 太字などのHTMLタグを消す
-      .replace(/'/g, "\\'")         // シングルクォートをエスケープ
-      .replace(/"/g, "&quot;")      // ダブルクォートを安全な文字に変換
-      .replace(/\r?\n/g, " ");      // ★一番の原因「改行」をただのスペースに変換！
-      
+      .replace(/<[^>]*>?/gm, '')
+      .replace(/'/g, "\\'")
+      .replace(/"/g, '&quot;')
+      .replace(/\r?\n/g, ' ');
     return `<button onclick="event.stopPropagation(); playVoice('${safeText}')" style="margin-left:8px; background:${bg}; border:none; color:${color}; border-radius:12px; padding:4px 10px; font-size:11px; font-weight:bold; cursor:pointer; flex-shrink:0; vertical-align:middle; box-shadow:0 2px 4px rgba(0,0,0,0.05); letter-spacing:0.5px;">音声</button>`;
   };
 
-  if (layoutMode === 'table') {
-    let html = `<div style="overflow-x: auto; border-radius: 12px; border: 1px solid #e2e8f0; background: white;"><table style="width: 100%; border-collapse: collapse;"><thead><tr style="background: #f8f9fa;"><th style="padding:12px; text-align:left; border-bottom:2px solid #e2e8f0;">単語</th><th style="padding:12px; text-align:left; border-bottom:2px solid #e2e8f0;">日本語訳</th><th style="padding:12px; text-align:left; border-bottom:2px solid #e2e8f0;">例文</th><th style="padding:12px; text-align:center; border-bottom:2px solid #e2e8f0;">状態</th></tr></thead><tbody>`;
-    displayWords.forEach(w => {
-        const enText = createMaskableText(w.en, showEn, true);
-        const jaText = createMaskableText(w.ja, showJa, false);
-        let exHtml = '<span style="color: #ccc;">-</span>';
-        if (w.ex || w.exJa) {
-          const exEn = w.ex ? createMaskableText(w.ex, showEn, false, w.en) : '';
-          const exJa = w.exJa ? createMaskableText(w.exJa, showJa, false, w.ja) : '';
-          // ▼ 普通の文章として配置
-          exHtml = `<div style="overflow-wrap:break-word; word-break:break-word;">${exEn}${createVoiceBtn(w.ex, "#1abc9c", "#e8f8f5")}</div><div style="font-size:0.85em; color:#7f8c8d; margin-top:4px; overflow-wrap:break-word; word-break:break-word;">${exJa}</div>`;
-        }
-        const s = w.streak || 0, target = targetThreshold;
-        const rem = (w.nextReviewTime || 0) - now;
-        let statusHtml = s >= target ? `<span class="time-display" data-next-time="${w.nextReviewTime}" style="color:${rem<=0?'var(--review-ready)':'var(--success)'}; font-weight:bold;">${rem<=0?'復習':'待機'}</span>` : `<span style="color:var(--primary); font-weight:bold;">学習中</span>`;
-        
-        html += `<tr>
-          <td style="padding:12px; border-bottom:1px solid #e2e8f0; vertical-align:top;">
-            <div style="overflow-wrap:break-word; word-break:break-word;"><span style="font-weight:bold;">${enText}</span>${createVoiceBtn(w.en)}</div>
-          </td>
-          <td style="padding:12px; border-bottom:1px solid #e2e8f0; vertical-align:top; overflow-wrap:break-word; word-break:break-word;">${jaText}</td>
-          <td style="padding:12px; border-bottom:1px solid #e2e8f0; vertical-align:top;">${exHtml}</td>
-          <td style="padding:12px; border-bottom:1px solid #e2e8f0; text-align:center; vertical-align:top;">${statusHtml}</td>
-        </tr>`;
-      });
-    html += `</tbody></table></div>`;
-    container.innerHTML = html;
-  } else {
-    let html = `<div>`;
-    displayWords.forEach(w => {
-      const enText = createMaskableText(w.en, showEn, true);
-      const jaText = createMaskableText(w.ja, showJa, false);
-      const exEnText = w.ex ? createMaskableText(w.ex, showEn, false, w.en) : '';
-      const exJaText = w.exJa ? createMaskableText(w.exJa, showJa, false, w.ja) : '';
-      const s = w.streak || 0, target = targetThreshold;
-      const width = Math.min(100, (s / target) * 100);
-      const rem = (w.nextReviewTime || 0) - now;
-      
-      let statusBg = (s >= target) ? (rem <= 0 ? 'var(--review-ready)' : 'var(--success)') : 'var(--border-soft)';
-      let statusColor = (s >= target) ? '#fff' : '#7f8c8d';
-      let statusText = (s >= target) ? (rem <= 0 ? '復習可' : '待機中') : '学習中';
+  const createListCardHtml = (w, now) => {
+    const enText = createMaskableText(w.en, showEn, true);
+    const jaText = createMaskableText(w.ja, showJa, false);
+    const exEnText = w.ex ? createMaskableText(w.ex, showEn, false, w.en) : '';
+    const exJaText = w.exJa ? createMaskableText(w.exJa, showJa, false, w.ja) : '';
+    const s = w.streak || 0;
+    const target = targetThreshold;
+    const width = Math.min(100, (s / target) * 100);
+    const rem = (w.nextReviewTime || 0) - now;
 
-      html += `<div class="progress-card" style="margin-bottom: 15px; background: white; border-radius: 12px; padding: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; gap: 8px;">
-          <div style="flex: 1; min-width: 0; overflow-wrap: break-word; word-break: break-word;">
-            <span style="font-size:1.2em; font-weight: bold;">${enText}</span>${createVoiceBtn(w.en)}
-          </div>
-          <span class="${s >= target ? 'time-display' : ''}" data-next-time="${w.nextReviewTime}" style="font-size: 0.8em; padding: 4px 10px; border-radius: 12px; background: ${statusBg}; color: ${statusColor}; font-weight: bold; white-space: nowrap; flex-shrink: 0; margin-top: 4px;">${statusText}</span>
+    const statusBg = (s >= target) ? (rem <= 0 ? 'var(--review-ready)' : 'var(--success)') : 'var(--border-soft)';
+    const statusColor = (s >= target) ? '#fff' : '#7f8c8d';
+    const statusText = (s >= target) ? (rem <= 0 ? '復習可' : '待機中') : '学習中';
+
+    return `<div class="progress-card" style="margin-bottom: 15px; background: var(--bg-surface); border-radius: 12px; padding: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid var(--border); box-sizing: border-box;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; gap: 8px;">
+        <div style="flex: 1; min-width: 0; overflow-wrap: break-word; word-break: break-word;">
+          <span style="font-size:1.2em; font-weight: bold;">${enText}</span>${createVoiceBtn(w.en)}
         </div>
-        <div style="margin-bottom:8px; word-break: break-word; overflow-wrap: break-word;">${jaText}</div>
-        ${w.ex ? `<div style="color:#57606f; margin-top:4px; overflow-wrap:break-word; word-break:break-word;">${exEnText}${createVoiceBtn(w.ex, "#1abc9c", "#e8f8f5")}</div>` : ''}
-        ${w.exJa ? `<div style="font-size:0.9em; color:#7f8c8d; margin-top:2px; word-break:break-word; overflow-wrap:break-word;">${exJaText}</div>` : ''}
-        
-        <div style="background: #ecf0f1; border-radius: 10px; height: 6px; width: 100%; margin: 15px 0 8px; overflow: hidden;">
-          <div style="background: #3498db; height: 100%; width: ${width}%;"></div>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #7f8c8d;">
-          <span>${chapterMap[w.chapterId]} : ${wordIndexMap[w.id]}</span>
-          <span>習得度 ${s}/${target}</span>
-        </div>
-      </div>`;
-    });
-    html += `</div>`;
-    container.innerHTML = html;
+        <span class="${s >= target ? 'time-display' : ''}" data-next-time="${w.nextReviewTime}" style="font-size: 0.8em; padding: 4px 10px; border-radius: 12px; background: ${statusBg}; color: ${statusColor}; font-weight: bold; white-space: nowrap; flex-shrink: 0; margin-top: 4px;">${statusText}</span>
+      </div>
+      <div style="margin-bottom:8px; word-break: break-word; overflow-wrap: break-word;">${jaText}</div>
+      ${w.ex ? `<div style="color:var(--text-secondary); margin-top:4px; overflow-wrap:break-word; word-break:break-word;">${exEnText}${createVoiceBtn(w.ex, 'var(--success)', 'var(--success-soft)')}</div>` : ''}
+      ${w.exJa ? `<div style="font-size:0.9em; color:var(--text-secondary); margin-top:2px; word-break:break-word; overflow-wrap:break-word;">${exJaText}</div>` : ''}
+      <div style="background: var(--border-soft); border-radius: 10px; height: 6px; width: 100%; margin: 15px 0 8px; overflow: hidden;">
+        <div style="background: var(--primary); height: 100%; width: ${width}%;"></div>
+      </div>
+      <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: var(--text-secondary);">
+        <span>${chapterMap[w.chapterId]} : ${wordIndexMap[w.id]}</span>
+        <span>習得度 ${s}/${target}</span>
+      </div>
+    </div>`;
+  };
+
+  const createTableRowHtml = (w, now) => {
+    const enText = createMaskableText(w.en, showEn, true);
+    const jaText = createMaskableText(w.ja, showJa, false);
+    let exHtml = '<span style="color: var(--text-secondary);">-</span>';
+    if (w.ex || w.exJa) {
+      const exEn = w.ex ? createMaskableText(w.ex, showEn, false, w.en) : '';
+      const exJa = w.exJa ? createMaskableText(w.exJa, showJa, false, w.ja) : '';
+      exHtml = `<div style="overflow-wrap:break-word; word-break:break-word;">${exEn}${createVoiceBtn(w.ex, 'var(--success)', 'var(--success-soft)')}</div><div style="font-size:0.85em; color:var(--text-secondary); margin-top:4px; overflow-wrap:break-word; word-break:break-word;">${exJa}</div>`;
+    }
+    const s = w.streak || 0;
+    const target = targetThreshold;
+    const rem = (w.nextReviewTime || 0) - now;
+    const statusHtml = s >= target
+      ? `<span class="time-display" data-next-time="${w.nextReviewTime}" style="color:${rem<=0?'var(--review-ready)':'var(--success)'}; font-weight:bold;">${rem<=0?'復習':'待機'}</span>`
+      : `<span style="color:var(--primary); font-weight:bold;">学習中</span>`;
+
+    return `<tr>
+      <td style="padding:12px; border-bottom:1px solid var(--border); vertical-align:top;">
+        <div style="overflow-wrap:break-word; word-break:break-word;"><span style="font-weight:bold;">${enText}</span>${createVoiceBtn(w.en)}</div>
+      </td>
+      <td style="padding:12px; border-bottom:1px solid var(--border); vertical-align:top; overflow-wrap:break-word; word-break:break-word;">${jaText}</td>
+      <td style="padding:12px; border-bottom:1px solid var(--border); vertical-align:top;">${exHtml}</td>
+      <td style="padding:12px; border-bottom:1px solid var(--border); text-align:center; vertical-align:top;">${statusHtml}</td>
+    </tr>`;
+  };
+
+  const estimatedItemHeight = layoutMode === 'table' ? 72 : 210;
+  const preloadBuffer = layoutMode === 'table' ? 20 : 10;
+  const baseWindow = layoutMode === 'table' ? 55 : 20;
+  const firstVisibleIndex = Math.max(0, Math.floor(savedScrollTop / estimatedItemHeight));
+  const initialStart = Math.max(0, firstVisibleIndex - preloadBuffer);
+  const initialEnd = Math.min(displayWords.length, Math.max(initialStart + baseWindow, firstVisibleIndex + preloadBuffer));
+
+  progressVirtualState = {
+    words: displayWords,
+    layoutMode,
+    chapterMap,
+    wordIndexMap,
+    targetThreshold,
+    estimatedItemHeight,
+    preloadBuffer,
+    windowSize: baseWindow,
+    startIndex: initialStart,
+    endIndex: initialEnd,
+    config,
+    viewKey,
+    renderListCard: createListCardHtml,
+    renderTableRow: createTableRowHtml
+  };
+
+  if (layoutMode === 'table') {
+    container.innerHTML = `<div style="overflow-x: auto; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-surface);"><table style="width: 100%; border-collapse: collapse;"><thead><tr style="background: var(--bg-muted);"><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">単語</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">日本語訳</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">例文</th><th style="padding:12px; text-align:center; border-bottom:2px solid var(--border);">状態</th></tr></thead><tbody id="progress-table-body"></tbody></table></div>`;
+  } else {
+    container.innerHTML = '<div id="progress-top-spacer"></div><div id="progress-items-host"></div><div id="progress-bottom-spacer"></div>';
   }
+
+  renderProgressVirtualWindow();
+  container.scrollTop = savedScrollTop;
+}
+
+function renderProgressVirtualWindow() {
+  const container = document.getElementById('progress-view-container');
+  if (!container || !progressVirtualState) return;
+
+  const now = Date.now();
+  const { words, startIndex, endIndex, estimatedItemHeight, layoutMode } = progressVirtualState;
+  const visibleWords = words.slice(startIndex, endIndex);
+
+  if (layoutMode === 'table') {
+    const tbody = document.getElementById('progress-table-body');
+    if (!tbody) return;
+    const topH = startIndex * estimatedItemHeight;
+    const bottomH = Math.max(0, (words.length - endIndex) * estimatedItemHeight);
+    const tableRows = visibleWords.map(w => progressVirtualState.renderTableRow(w, now)).join('');
+    tbody.innerHTML = `
+      <tr><td colspan="4" style="padding:0; border:none; height:${topH}px;"></td></tr>
+      ${tableRows}
+      <tr><td colspan="4" style="padding:0; border:none; height:${bottomH}px;"></td></tr>
+    `;
+    return;
+  }
+
+  const topSpacer = document.getElementById('progress-top-spacer');
+  const bottomSpacer = document.getElementById('progress-bottom-spacer');
+  const host = document.getElementById('progress-items-host');
+  if (!topSpacer || !bottomSpacer || !host) return;
+
+  topSpacer.style.height = `${startIndex * estimatedItemHeight}px`;
+  bottomSpacer.style.height = `${Math.max(0, (words.length - endIndex) * estimatedItemHeight)}px`;
+  host.innerHTML = visibleWords.map(w => progressVirtualState.renderListCard(w, now)).join('');
+}
+
+function handleProgressVirtualScroll() {
+  const container = document.getElementById('progress-view-container');
+  if (!container) return;
+
+  const activeConfig = progressVirtualState ? progressVirtualState.config : getProgressViewConfig();
+  const activeKey = progressVirtualState ? progressVirtualState.viewKey : JSON.stringify(activeConfig);
+  saveProgressViewState({ ...activeConfig, lastViewKey: activeKey, scrollTop: container.scrollTop });
+
+  if (!progressVirtualState) return;
+
+  if (progressScrollRafPending) return;
+  progressScrollRafPending = true;
+  requestAnimationFrame(() => {
+    progressScrollRafPending = false;
+    if (!progressVirtualState) return;
+
+    const total = progressVirtualState.words.length;
+    const estimated = progressVirtualState.estimatedItemHeight;
+    const preload = progressVirtualState.preloadBuffer;
+    const base = progressVirtualState.windowSize;
+    const firstVisible = Math.max(0, Math.floor(container.scrollTop / estimated));
+
+    const nextStart = Math.max(0, firstVisible - preload);
+    const nextEnd = Math.min(total, Math.max(nextStart + base, firstVisible + preload));
+
+    if (nextStart !== progressVirtualState.startIndex || nextEnd !== progressVirtualState.endIndex) {
+      progressVirtualState.startIndex = nextStart;
+      progressVirtualState.endIndex = nextEnd;
+      renderProgressVirtualWindow();
+    }
+  });
 }
 
 // ▼ 2. 通常クイズ開始（フラッシュバグ防止版）
@@ -2589,9 +2821,17 @@ document.addEventListener('click', function(event) {
 
 
 // 進捗画面の変化を監視開始
-const container = document.getElementById('progress-view-container');
-if (container && observer) {
-    observer.observe(container, { childList: true, subtree: true });
+const progressContainer = document.getElementById('progress-view-container');
+if (progressContainer && observer) {
+  observer.observe(progressContainer, { childList: true, subtree: true });
+}
+if (progressContainer) {
+  progressContainer.addEventListener('scroll', handleProgressVirtualScroll, { passive: true });
+}
+
+const wordListContainer = document.getElementById('word-list');
+if (wordListContainer) {
+  wordListContainer.addEventListener('scroll', handleWordListVirtualScroll, { passive: true });
 }
 // ▲▲ ここまで ▲▲
 
