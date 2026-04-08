@@ -603,6 +603,34 @@ li {
   /* この辺りのリストなどの設定はそのまま */
   .app-header { padding: 12px 15px; }
   .app-header h1 { font-size: 18px; }
+  body { padding-top: 66px; }
+
+  /* 画面の横幅をギリギリまで活かしつつ、読みやすさを上げる */
+  .main-content {
+    max-width: 100%;
+    padding: 4px 8px;
+  }
+  .panel {
+    padding: 16px;
+    border-radius: 14px;
+  }
+  .setting-box {
+    padding: 16px;
+    border-radius: 12px;
+  }
+  h2 { font-size: 1.2em; }
+  h3 { font-size: 1.05em; }
+
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="password"],
+  select,
+  textarea {
+    font-size: 16px;
+    padding: 14px;
+  }
+
   li { flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; }
   .word-info { padding-right: 0; width: 100%; }
   .chapter-actions, .word-actions { width: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; flex-direction: row; }
@@ -611,7 +639,7 @@ li {
   /* ▼▼ 変更：隙間を最小限にして、ボタンと文字を大きく！ ▼▼ */
   
   /* メイン領域の上下の余白をさらにギリギリまで削る */
-  .main-content { padding: 5px 15px; }
+  .main-content { padding: 4px 8px; }
   
   /* 選択肢ボタン：隙間を詰めて、文字と厚みを限界まで大きくする */
   .choice-btn { 
@@ -623,8 +651,8 @@ li {
 
   /* 「次へ」ボタンなども押しやすくバランスを合わせる */
   button {
-    padding: 12px 15px;
-    font-size: 16px;
+    padding: 13px 16px;
+    font-size: 17px;
   }
   /* ▲▲ ここまで ▲▲ */
 
