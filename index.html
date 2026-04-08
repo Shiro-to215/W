@@ -1149,6 +1149,12 @@ let progressVirtualState = null;
 let progressScrollRafPending = false;
 let wordListVirtualState = null;
 let wordListScrollRafPending = false;
+let lastProgressStateSaveAt = 0;
+let lastWordListStateSaveAt = 0;
+let progressTableRenderToken = 0;
+
+const RENDER_BATCH_SIZE = 100;
+const TABLE_RENDER_BATCH_SIZE = 60;
 
 const PROGRESS_VIEW_STATE_KEY = 'vocabProgressViewState_V1';
 const WORD_LIST_VIEW_STATE_KEY = 'vocabWordListViewState_V1';
@@ -1655,10 +1661,12 @@ function renderWordList() {
   }
 
   const estimatedItemHeight = 110;
-  const preloadBuffer = 18;
-  const windowSize = 45;
+  const preloadBuffer = 22;
+  const windowSize = RENDER_BATCH_SIZE;
+  const updateStep = 3;
   const firstVisibleIndex = Math.max(0, Math.floor(savedScrollTop / estimatedItemHeight));
-  const initialStart = Math.max(0, firstVisibleIndex - preloadBuffer);
+  const initialAnchor = Math.floor(firstVisibleIndex / updateStep) * updateStep;
+  const initialStart = Math.max(0, initialAnchor - preloadBuffer);
   const initialEnd = Math.min(words.length, Math.max(initialStart + windowSize, firstVisibleIndex + preloadBuffer));
 
   wordListVirtualState = {
@@ -1667,6 +1675,7 @@ function renderWordList() {
     estimatedItemHeight,
     preloadBuffer,
     windowSize,
+    updateStep,
     startIndex: initialStart,
     endIndex: initialEnd
   };
@@ -1720,11 +1729,15 @@ function handleWordListVirtualScroll() {
   if (!list) return;
 
   if (wordListVirtualState) {
-    saveWordListViewState({
-      lastKey: wordListVirtualState.stateKey,
-      scrollTop: list.scrollTop,
-      filterChapterId: document.getElementById('filter-chapter-select') ? document.getElementById('filter-chapter-select').value : 'all'
-    });
+    const nowTs = Date.now();
+    if (nowTs - lastWordListStateSaveAt > 180) {
+      saveWordListViewState({
+        lastKey: wordListVirtualState.stateKey,
+        scrollTop: list.scrollTop,
+        filterChapterId: document.getElementById('filter-chapter-select') ? document.getElementById('filter-chapter-select').value : 'all'
+      });
+      lastWordListStateSaveAt = nowTs;
+    }
   }
 
   if (!wordListVirtualState) return;
@@ -1736,9 +1749,11 @@ function handleWordListVirtualScroll() {
     if (!wordListVirtualState) return;
 
     const { words, estimatedItemHeight, preloadBuffer, windowSize } = wordListVirtualState;
+    const step = wordListVirtualState.updateStep || 1;
     const firstVisible = Math.max(0, Math.floor(list.scrollTop / estimatedItemHeight));
-    const nextStart = Math.max(0, firstVisible - preloadBuffer);
-    const nextEnd = Math.min(words.length, Math.max(nextStart + windowSize, firstVisible + preloadBuffer));
+    const anchoredVisible = Math.floor(firstVisible / step) * step;
+    const nextStart = Math.max(0, anchoredVisible - preloadBuffer);
+    const nextEnd = Math.min(words.length, Math.max(nextStart + windowSize, anchoredVisible + preloadBuffer));
 
     if (nextStart !== wordListVirtualState.startIndex || nextEnd !== wordListVirtualState.endIndex) {
       wordListVirtualState.startIndex = nextStart;
@@ -2111,6 +2126,7 @@ function toggleMask(el) {
 }
 
 function renderProgressView() {
+  progressTableRenderToken++;
   const config = getProgressViewConfig();
   const { chapterId: chId, displayMode, sortOrder, layoutMode, weakFilter, searchQuery } = config;
 
@@ -2271,11 +2287,45 @@ function renderProgressView() {
     </tr>`;
   };
 
-  const estimatedItemHeight = layoutMode === 'table' ? 72 : 210;
-  const preloadBuffer = layoutMode === 'table' ? 20 : 10;
-  const baseWindow = layoutMode === 'table' ? 55 : 20;
+  if (layoutMode === 'table') {
+    const now = Date.now();
+    const currentToken = progressTableRenderToken;
+    container.innerHTML = `<div style="overflow-x: auto; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-surface);"><table style="width: 100%; border-collapse: collapse; table-layout: fixed;"><colgroup><col style="width:25%;"><col style="width:25%;"><col style="width:25%;"><col style="width:25%;"></colgroup><thead><tr style="background: var(--bg-muted);"><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border); white-space:nowrap;">英単語</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">日本語訳</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">例文</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">例文訳</th></tr></thead><tbody id="progress-table-body"></tbody></table></div>`;
+
+    const tbody = document.getElementById('progress-table-body');
+    if (!tbody) return;
+
+    let index = 0;
+    let restoredScroll = false;
+    const appendChunk = () => {
+      if (currentToken !== progressTableRenderToken) return;
+      const end = Math.min(displayWords.length, index + TABLE_RENDER_BATCH_SIZE);
+      let html = '';
+      for (; index < end; index++) {
+        html += createTableRowHtml(displayWords[index], now);
+      }
+      if (html) tbody.insertAdjacentHTML('beforeend', html);
+
+      if (!restoredScroll) {
+        container.scrollTop = savedScrollTop;
+        restoredScroll = true;
+      }
+
+      if (index < displayWords.length) requestAnimationFrame(appendChunk);
+    };
+
+    appendChunk();
+    progressVirtualState = null;
+    return;
+  }
+
+  const estimatedItemHeight = 210;
+  const preloadBuffer = 14;
+  const baseWindow = RENDER_BATCH_SIZE;
+  const updateStep = 2;
   const firstVisibleIndex = Math.max(0, Math.floor(savedScrollTop / estimatedItemHeight));
-  const initialStart = Math.max(0, firstVisibleIndex - preloadBuffer);
+  const initialAnchor = Math.floor(firstVisibleIndex / updateStep) * updateStep;
+  const initialStart = Math.max(0, initialAnchor - preloadBuffer);
   const initialEnd = Math.min(displayWords.length, Math.max(initialStart + baseWindow, firstVisibleIndex + preloadBuffer));
 
   progressVirtualState = {
@@ -2287,6 +2337,7 @@ function renderProgressView() {
     estimatedItemHeight,
     preloadBuffer,
     windowSize: baseWindow,
+    updateStep,
     startIndex: initialStart,
     endIndex: initialEnd,
     config,
@@ -2295,11 +2346,7 @@ function renderProgressView() {
     renderTableRow: createTableRowHtml
   };
 
-  if (layoutMode === 'table') {
-    container.innerHTML = `<div style="overflow-x: auto; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-surface);"><table style="width: 100%; border-collapse: collapse; table-layout: fixed;"><colgroup><col style="width:25%;"><col style="width:25%;"><col style="width:25%;"><col style="width:25%;"></colgroup><thead><tr style="background: var(--bg-muted);"><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border); white-space:nowrap;">英単語</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">日本語訳</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">例文</th><th style="padding:12px; text-align:left; border-bottom:2px solid var(--border);">例文訳</th></tr></thead><tbody id="progress-table-body"></tbody></table></div>`;
-  } else {
-    container.innerHTML = '<div id="progress-top-spacer"></div><div id="progress-items-host"></div><div id="progress-bottom-spacer"></div>';
-  }
+  container.innerHTML = '<div id="progress-top-spacer"></div><div id="progress-items-host"></div><div id="progress-bottom-spacer"></div>';
 
   renderProgressVirtualWindow();
   container.scrollTop = savedScrollTop;
@@ -2312,20 +2359,6 @@ function renderProgressVirtualWindow() {
   const now = Date.now();
   const { words, startIndex, endIndex, estimatedItemHeight, layoutMode } = progressVirtualState;
   const visibleWords = words.slice(startIndex, endIndex);
-
-  if (layoutMode === 'table') {
-    const tbody = document.getElementById('progress-table-body');
-    if (!tbody) return;
-    const topH = startIndex * estimatedItemHeight;
-    const bottomH = Math.max(0, (words.length - endIndex) * estimatedItemHeight);
-    const tableRows = visibleWords.map(w => progressVirtualState.renderTableRow(w, now)).join('');
-    tbody.innerHTML = `
-      <tr><td colspan="4" style="padding:0; border:none; height:${topH}px;"></td></tr>
-      ${tableRows}
-      <tr><td colspan="4" style="padding:0; border:none; height:${bottomH}px;"></td></tr>
-    `;
-    return;
-  }
 
   const topSpacer = document.getElementById('progress-top-spacer');
   const bottomSpacer = document.getElementById('progress-bottom-spacer');
@@ -2344,7 +2377,11 @@ function handleProgressVirtualScroll() {
   const activeConfig = progressVirtualState ? progressVirtualState.config : getProgressViewConfig();
   const activeKey = progressVirtualState ? progressVirtualState.viewKey : JSON.stringify(activeConfig);
   const activeScrollKey = getProgressScrollKey(activeConfig);
-  saveProgressViewState({ ...activeConfig, lastViewKey: activeKey, lastScrollKey: activeScrollKey, scrollTop: container.scrollTop });
+  const nowTs = Date.now();
+  if (nowTs - lastProgressStateSaveAt > 180) {
+    saveProgressViewState({ ...activeConfig, lastViewKey: activeKey, lastScrollKey: activeScrollKey, scrollTop: container.scrollTop });
+    lastProgressStateSaveAt = nowTs;
+  }
 
   if (!progressVirtualState) return;
 
@@ -2358,10 +2395,12 @@ function handleProgressVirtualScroll() {
     const estimated = progressVirtualState.estimatedItemHeight;
     const preload = progressVirtualState.preloadBuffer;
     const base = progressVirtualState.windowSize;
+    const step = progressVirtualState.updateStep || 1;
     const firstVisible = Math.max(0, Math.floor(container.scrollTop / estimated));
+    const anchoredVisible = Math.floor(firstVisible / step) * step;
 
-    const nextStart = Math.max(0, firstVisible - preload);
-    const nextEnd = Math.min(total, Math.max(nextStart + base, firstVisible + preload));
+    const nextStart = Math.max(0, anchoredVisible - preload);
+    const nextEnd = Math.min(total, Math.max(nextStart + base, anchoredVisible + preload));
 
     if (nextStart !== progressVirtualState.startIndex || nextEnd !== progressVirtualState.endIndex) {
       progressVirtualState.startIndex = nextStart;
@@ -2868,4 +2907,3 @@ if (wordListContainer) {
 </script>
 </body>
 </html>
-
